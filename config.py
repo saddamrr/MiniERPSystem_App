@@ -13,7 +13,7 @@ API_URL = db_config['api_url']
 COMPANY_DATA = {
     'nama': 'SARI ALAM',
     'jenis_usaha': 'Supplier / Distributor Kedelai',
-    'alamat': 'Jl. Raya Kedelai No. 123, Kecamatan Kedelai, Kota Kedelai',
+    'alamat': 'Jl. Sanan No. 123, Kecamatan Kedelai, Kota Kedelai',
     'telp': '(021) 12345678',
     'email': 'sarialam@email.com',
     'website': 'www.sarialam.com'
