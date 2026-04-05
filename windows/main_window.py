@@ -26,7 +26,7 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(STYLE)
         
         # Set font default
-        default_font = QFont("Segoe UI", 8)
+        default_font = QFont("Segoe UI", 10)
         QApplication.setFont(default_font)
         
         self.is_closing = False
