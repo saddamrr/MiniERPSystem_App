@@ -285,28 +285,97 @@ class ReportPage(QWidget):
         return widget
     
     def create_customer_tab(self):
-        """Tab untuk laporan pelanggan"""
+        """Tab untuk laporan pelanggan dengan double click untuk history"""
         widget = QWidget()
         layout = QVBoxLayout()
         layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(15)
         
+        # Filter bar
+        filter_layout = QHBoxLayout()
+        filter_layout.addWidget(QLabel("Cari Pelanggan:"))
+        self.customer_search_input = QLineEdit()
+        self.customer_search_input.setPlaceholderText("Nama atau kode pelanggan...")
+        self.customer_search_input.setMinimumHeight(32)
+        self.customer_search_input.setFixedWidth(250)
+        self.customer_search_input.textChanged.connect(self.filter_customer_report)
+        filter_layout.addWidget(self.customer_search_input)
+        
+        filter_layout.addStretch()
+        
+        # Tombol refresh
+        refresh_btn = QPushButton("🔄 Refresh")
+        refresh_btn.setMinimumHeight(32)
+        refresh_btn.setFixedWidth(100)
+        refresh_btn.clicked.connect(self.update_customer_tab)
+        filter_layout.addWidget(refresh_btn)
+        
+        layout.addLayout(filter_layout)
+        
+        # ==================== TABEL PELANGGAN ====================
+        # Gunakan QTableWidget langsung (scroll otomatis)
         self.customer_table = QTableWidget()
         self.customer_table.setColumnCount(4)
-        self.customer_table.setHorizontalHeaderLabels(["Kode", "Nama", "Total Belanja", "Terakhir Transaksi"])
-        self.customer_table.horizontalHeader().setStretchLastSection(True)
+        self.customer_table.setHorizontalHeaderLabels(["Kode", "Nama", "Total Belanja", "Transaksi"])
         self.customer_table.setAlternatingRowColors(True)
+        self.customer_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.customer_table.setSelectionMode(QTableWidget.SingleSelection)
         
+        # Set column widths
         self.customer_table.setColumnWidth(0, 100)
-        self.customer_table.setColumnWidth(1, 180)
+        self.customer_table.setColumnWidth(1, 200)
         self.customer_table.setColumnWidth(2, 150)
-        self.customer_table.setColumnWidth(3, 150)
+        self.customer_table.setColumnWidth(3, 100)
         
         self.customer_table.verticalHeader().setDefaultSectionSize(40)
         self.customer_table.verticalHeader().setVisible(False)
         
+        # Connect DOUBLE CLICK event
+        self.customer_table.itemDoubleClicked.connect(self.on_customer_table_double_click)
+        
         layout.addWidget(self.customer_table)
+        
+        # Info
+        info_label = QLabel("💡 Tips: Double klik pada baris pelanggan untuk melihat history transaksi lengkap")
+        info_label.setStyleSheet("color: #64748b; font-size: 11px; margin-top: 8px;")
+        layout.addWidget(info_label)
+        
         widget.setLayout(layout)
         return widget
+    
+    def on_customer_selected(self):
+        """Handle when a customer is selected in the table"""
+        selected_rows = self.customer_table.selectedItems()
+        if not selected_rows:
+            return
+        
+        row = selected_rows[0].row()
+        
+        # Dapatkan data dari tabel yang sedang ditampilkan (bisa filtered)
+        current_data = []
+        for i in range(self.customer_table.rowCount()):
+            kode = self.customer_table.item(i, 0).text() if self.customer_table.item(i, 0) else ""
+            nama = self.customer_table.item(i, 1).text() if self.customer_table.item(i, 1) else ""
+            current_data.append({'kode': kode, 'nama': nama})
+        
+        if row < len(current_data):
+            customer_kode = current_data[row]['kode']
+            customer_nama = current_data[row]['nama']
+            
+            # Cari di all_customer_data berdasarkan kode atau nama
+            customer = None
+            if hasattr(self, 'all_customer_data'):
+                for c in self.all_customer_data:
+                    if c.get('kode_pelanggan') == customer_kode or c.get('nama') == customer_nama:
+                        customer = c
+                        break
+            
+            if customer:
+                # Update info label
+                # self.selected_customer_name.setText(f"👤 {customer.get('nama')} ({customer.get('kode_pelanggan')})")
+                
+                # Show purchase details
+                self.show_customer_purchase_details(customer)
     
     def create_stock_tab(self):
         """Tab untuk laporan stok"""
@@ -333,6 +402,189 @@ class ReportPage(QWidget):
         layout.addWidget(self.stock_table)
         widget.setLayout(layout)
         return widget
+    
+    def update_customer_tab(self):
+        """Update customer report table with purchase details"""
+        try:
+            self.customers = DatabaseHelper.get_customers()
+            
+            if not self.customers:
+                self.customer_table.setRowCount(0)
+                self.customer_table.setHorizontalHeaderLabels(["Kode", "Nama", "Total Belanja", "Total Transaksi", "Terakhir Transaksi"])
+                return
+            
+            # Ambil semua transaksi untuk menghitung detail per pelanggan
+            all_transactions = DatabaseHelper.get_transactions_with_details()
+            
+            # Hitung statistik per pelanggan
+            customer_stats = {}
+            customer_purchases = {}  # Menyimpan detail pembelian per pelanggan
+            
+            for t in all_transactions:
+                customer_id = t.get('id_pelanggan')
+                if customer_id:
+                    if customer_id not in customer_stats:
+                        customer_stats[customer_id] = {
+                            'total_belanja': 0,
+                            'total_transaksi': 0,
+                            'terakhir_transaksi': t.get('tanggal_transaksi', '-')
+                        }
+                        customer_purchases[customer_id] = []
+                    
+                    customer_stats[customer_id]['total_belanja'] += safe_float(t.get('total_bayar', 0))
+                    customer_stats[customer_id]['total_transaksi'] += 1
+                    
+                    # Update terakhir transaksi jika lebih baru
+                    tgl_trans = t.get('tanggal_transaksi', '-')
+                    if tgl_trans > customer_stats[customer_id]['terakhir_transaksi']:
+                        customer_stats[customer_id]['terakhir_transaksi'] = tgl_trans
+                    
+                    # Ambil detail items dari transaksi
+                    items = t.get('items', [])
+                    if not items:
+                        items = t.get('details', [])
+                    
+                    for item in items:
+                        customer_purchases[customer_id].append({
+                            'tanggal': t.get('tanggal_transaksi', '-')[:19],
+                            'no_invoice': t.get('no_invoice', '-'),
+                            'brand': item.get('brand', '-'),
+                            'jumlah_karung': safe_float(item.get('jumlah_karung', 0)),
+                            'kg': safe_float(item.get('jumlah_kg', 0)),
+                            'subtotal': safe_float(item.get('subtotal', 0))
+                        })
+            
+            # Gabungkan dengan data pelanggan
+            customer_list = []
+            for c in self.customers:
+                customer_id = c.get('id_pelanggan')
+                stats = customer_stats.get(customer_id, {
+                    'total_belanja': 0,
+                    'total_transaksi': 0,
+                    'terakhir_transaksi': '-'
+                })
+                
+                customer_list.append({
+                    'id_pelanggan': customer_id,
+                    'kode_pelanggan': c.get('kode_pelanggan', '-'),
+                    'nama': c.get('nama', '-'),
+                    'total_belanja': stats['total_belanja'],
+                    'total_transaksi': stats['total_transaksi'],
+                    'terakhir_transaksi': stats['terakhir_transaksi'][:19] if stats['terakhir_transaksi'] != '-' else '-',
+                    'purchases': customer_purchases.get(customer_id, [])
+                })
+            
+            # Sort by total belanja
+            customer_list.sort(key=lambda x: x['total_belanja'], reverse=True)
+            
+            # Simpan untuk filtering
+            self.all_customer_data = customer_list
+            self.display_customer_report(customer_list)
+            
+        except Exception as e:
+            print(f"Error updating customer tab: {e}")
+            self.customer_table.setRowCount(0)
+
+    def display_customer_report(self, customers):
+        """Display customer report in table"""
+        print(f"Displaying {len(customers)} customers")  # Debug
+        
+        self.customer_table.setRowCount(len(customers))
+        self.customer_table.setSelectionMode(QTableWidget.SingleSelection)
+        
+        for i, c in enumerate(customers):
+            self.customer_table.setItem(i, 0, QTableWidgetItem(c.get('kode_pelanggan', '-')))
+            self.customer_table.setItem(i, 1, QTableWidgetItem(c.get('nama', '-')))
+            self.customer_table.setItem(i, 2, QTableWidgetItem(format_rupiah(c.get('total_belanja', 0))))
+            self.customer_table.setItem(i, 3, QTableWidgetItem(str(c.get('total_transaksi', 0))))
+        
+        # Alternating row colors
+        for i in range(self.customer_table.rowCount()):
+            for j in range(self.customer_table.columnCount()):
+                item = self.customer_table.item(i, j)
+                if item and i % 2 == 0:
+                    item.setBackground(QColor(248, 250, 252))
+        
+        # Resize rows to contents
+        self.customer_table.resizeRowsToContents()
+
+    def filter_customer_report(self):
+        """Filter customer report by search text"""
+        if not hasattr(self, 'all_customer_data'):
+            return
+        
+        search_text = self.customer_search_input.text().lower()
+        
+        if not search_text:
+            self.display_customer_report(self.all_customer_data)
+            # Pilih baris pertama
+            if self.all_customer_data:
+                self.customer_table.selectRow(0)
+            return
+        
+        filtered = [c for c in self.all_customer_data 
+                    if search_text in c.get('nama', '').lower() 
+                    or search_text in c.get('kode_pelanggan', '').lower()]
+        
+        self.display_customer_report(filtered)
+        
+        # Pilih baris pertama jika ada
+        if filtered:
+            self.customer_table.selectRow(0)
+        else:
+            self.selected_customer_name.setText("Tidak ada pelanggan")
+            self.customer_detail_table.setRowCount(1)
+            self.customer_detail_table.setItem(0, 0, QTableWidgetItem("Tidak ada data"))
+
+    def on_customer_table_double_click(self, item):
+        """Handle double click on customer table - show full transaction history"""
+        row = item.row()
+        if hasattr(self, 'all_customer_data') and row < len(self.all_customer_data):
+            customer_data = self.all_customer_data[row]
+            
+            # Ambil data lengkap customer dari database
+            customer_id = customer_data.get('id_pelanggan')
+            if customer_id:
+                customer = DatabaseHelper.get_customer_by_id(customer_id)
+                if customer:
+                    from windows.customer_history_dialog import CustomerHistoryDialog
+                    dialog = CustomerHistoryDialog(customer, self)
+                    dialog.exec()
+
+    def show_customer_purchase_details(self, customer):
+        """Show purchase details for selected customer"""
+        purchases = customer.get('purchases', [])
+        
+        if not purchases:
+            self.customer_detail_table.setRowCount(1)
+            self.customer_detail_table.setItem(0, 0, QTableWidgetItem("Belum ada transaksi"))
+            # Kosongkan kolom lain
+            for col in range(1, 5):
+                if self.customer_detail_table.columnCount() > col:
+                    self.customer_detail_table.setItem(0, col, QTableWidgetItem(""))
+            return
+        
+        # Sort by tanggal (most recent first)
+        purchases.sort(key=lambda x: x.get('tanggal', ''), reverse=True)
+        
+        self.customer_detail_table.setRowCount(len(purchases))
+        
+        for i, p in enumerate(purchases):
+            self.customer_detail_table.setItem(i, 0, QTableWidgetItem(p.get('tanggal', '-')[:16]))
+            self.customer_detail_table.setItem(i, 1, QTableWidgetItem(p.get('no_invoice', '-')))
+            self.customer_detail_table.setItem(i, 2, QTableWidgetItem(p.get('brand', '-')))
+            self.customer_detail_table.setItem(i, 3, QTableWidgetItem(f"{p.get('jumlah_karung', 0):.1f}"))
+            self.customer_detail_table.setItem(i, 4, QTableWidgetItem(format_rupiah(p.get('subtotal', 0))))
+        
+        # Alternating row colors
+        for i in range(self.customer_detail_table.rowCount()):
+            for j in range(self.customer_detail_table.columnCount()):
+                item = self.customer_detail_table.item(i, j)
+                if item and i % 2 == 0:
+                    item.setBackground(QColor(248, 250, 252))
+        
+        # Resize rows
+        self.customer_detail_table.resizeRowsToContents()
     
     def on_period_change(self, period):
         """Handle period change"""
@@ -570,32 +822,98 @@ class ReportPage(QWidget):
             self.brand_table.setItem(i, 4, QTableWidgetItem(format_rupiah(b['subtotal'])))
     
     def update_customer_tab(self):
-        """Update customer report table from database"""
+        """Update customer report table with purchase details"""
         try:
             self.customers = DatabaseHelper.get_customers()
             
             if not self.customers:
                 self.customer_table.setRowCount(0)
-                self.customer_table.setHorizontalHeaderLabels(["Kode", "Nama", "Total Belanja", "Terakhir Transaksi"])
+                self.customer_table.setHorizontalHeaderLabels(["Kode", "Nama", "Total Belanja", "Transaksi"])
                 return
             
-            # Sort by total belanja
-            sorted_customers = sorted(self.customers, key=lambda x: safe_float(x.get('total_belanja', 0)), reverse=True)
+            # Ambil semua transaksi untuk menghitung detail per pelanggan
+            all_transactions = DatabaseHelper.get_transactions_with_details()
             
-            self.customer_table.setRowCount(len(sorted_customers))
+            # Hitung statistik per pelanggan
+            customer_stats = {}
+            customer_purchases = {}  # Menyimpan detail pembelian per pelanggan
             
-            for i, c in enumerate(sorted_customers):
-                self.customer_table.setItem(i, 0, QTableWidgetItem(str(c.get('kode_pelanggan', '-'))))
-                self.customer_table.setItem(i, 1, QTableWidgetItem(str(c.get('nama', '-'))))
-                self.customer_table.setItem(i, 2, QTableWidgetItem(format_rupiah(c.get('total_belanja', 0))))
-                last_trans = c.get('terakhir_transaksi', '-')
-                self.customer_table.setItem(i, 3, QTableWidgetItem(str(last_trans[:19] if last_trans and len(last_trans) > 19 else last_trans)))
+            for t in all_transactions:
+                customer_id = t.get('id_pelanggan')
+                if customer_id:
+                    if customer_id not in customer_stats:
+                        customer_stats[customer_id] = {
+                            'total_belanja': 0,
+                            'total_transaksi': 0,
+                            'terakhir_transaksi': t.get('tanggal_transaksi', '-')
+                        }
+                        customer_purchases[customer_id] = []
+                    
+                    customer_stats[customer_id]['total_belanja'] += safe_float(t.get('total_bayar', 0))
+                    customer_stats[customer_id]['total_transaksi'] += 1
+                    
+                    # Update terakhir transaksi jika lebih baru
+                    tgl_trans = t.get('tanggal_transaksi', '-')
+                    if tgl_trans > customer_stats[customer_id]['terakhir_transaksi']:
+                        customer_stats[customer_id]['terakhir_transaksi'] = tgl_trans
+                    
+                    # Ambil detail items dari transaksi
+                    items = t.get('items', [])
+                    if not items:
+                        items = t.get('details', [])
+                    
+                    for item in items:
+                        customer_purchases[customer_id].append({
+                            'tanggal': t.get('tanggal_transaksi', '-')[:19],
+                            'no_invoice': t.get('no_invoice', '-'),
+                            'brand': item.get('brand', '-'),
+                            'jumlah_karung': safe_float(item.get('jumlah_karung', 0)),
+                            'kg': safe_float(item.get('jumlah_kg', 0)),
+                            'subtotal': safe_float(item.get('subtotal', 0))
+                        })
+            
+            # Gabungkan dengan data pelanggan
+            customer_list = []
+            for c in self.customers:
+                customer_id = c.get('id_pelanggan')
+                stats = customer_stats.get(customer_id, {
+                    'total_belanja': 0,
+                    'total_transaksi': 0,
+                    'terakhir_transaksi': '-'
+                })
                 
+                customer_list.append({
+                    'id_pelanggan': customer_id,
+                    'kode_pelanggan': c.get('kode_pelanggan', '-'),
+                    'nama': c.get('nama', '-'),
+                    'total_belanja': stats['total_belanja'],
+                    'total_transaksi': stats['total_transaksi'],
+                    'terakhir_transaksi': stats['terakhir_transaksi'][:19] if stats['terakhir_transaksi'] != '-' else '-',
+                    'purchases': customer_purchases.get(customer_id, [])
+                })
+            
+            # Sort by total belanja
+            customer_list.sort(key=lambda x: x['total_belanja'], reverse=True)
+            
+            # Simpan untuk filtering
+            self.all_customer_data = customer_list
+            
+            # TAMPILKAN DATA KE TABEL
+            self.display_customer_report(customer_list)
+            
+            # Jika ada data, pilih baris pertama
+            if customer_list:
+                self.customer_table.selectRow(0)
+            else:
+                self.selected_customer_name.setText("Tidak ada pelanggan")
+                self.customer_detail_table.setRowCount(1)
+                self.customer_detail_table.setItem(0, 0, QTableWidgetItem("Tidak ada data"))
+            
         except Exception as e:
             print(f"Error updating customer tab: {e}")
+            import traceback
+            traceback.print_exc()
             self.customer_table.setRowCount(0)
-    
-    # pages/report_page.py - Update update_stock_tab untuk menampilkan lebih detail
 
     def update_stock_tab(self):
         """Update stock report table with statistics"""
@@ -668,8 +986,10 @@ class ReportPage(QWidget):
             print(f"Error updating stock tab: {e}")
             self.stock_table.setRowCount(0)
     
+    # pages/report_page.py - Update method export_to_excel
+
     def export_to_excel(self):
-        """Export report to Excel with multiple sheets"""
+        """Export report to Excel with multiple sheets - Lengkap dengan history pelanggan"""
         try:
             # Tanyakan lokasi penyimpanan
             filename, _ = QFileDialog.getSaveFileName(
@@ -687,9 +1007,6 @@ class ReportPage(QWidget):
             # Hapus sheet default
             wb.remove(wb.active)
             
-            # ==================== SHEET 1: RINGKASAN ====================
-            ws_summary = wb.create_sheet("Ringkasan")
-            
             # Style untuk header
             header_font = Font(bold=True, size=12, color="FFFFFF")
             header_fill = PatternFill(start_color="10b981", end_color="10b981", fill_type="solid")
@@ -699,18 +1016,23 @@ class ReportPage(QWidget):
                 top=Side(style='thin'),
                 bottom=Side(style='thin')
             )
+            title_font = Font(bold=True, size=14)
+            subtitle_font = Font(italic=True, size=11)
+            
+            # ==================== SHEET 1: RINGKASAN ====================
+            ws_summary = wb.create_sheet("Ringkasan")
             
             # Title
             ws_summary['A1'] = f"LAPORAN {self.period_combo.currentText().upper()}"
-            ws_summary['A1'].font = Font(bold=True, size=14)
+            ws_summary['A1'].font = title_font
             ws_summary.merge_cells('A1:D1')
             
             ws_summary['A2'] = f"Periode: {self.get_period_text()}"
-            ws_summary['A2'].font = Font(italic=True)
+            ws_summary['A2'].font = subtitle_font
             ws_summary.merge_cells('A2:D2')
             
             ws_summary['A3'] = f"Tanggal Export: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}"
-            ws_summary['A3'].font = Font(italic=True)
+            ws_summary['A3'].font = subtitle_font
             ws_summary.merge_cells('A3:D3')
             
             # Ringkasan Penjualan
@@ -780,12 +1102,9 @@ class ReportPage(QWidget):
                 customer_name = "-"
                 customer_id = t.get('id_pelanggan')
                 if customer_id:
-                    if 'pelanggan' in t and t['pelanggan']:
-                        customer_name = t['pelanggan'].get('nama', '-')
-                    else:
-                        customer = DatabaseHelper.get_customer_by_id(customer_id)
-                        if customer:
-                            customer_name = customer.get('nama', '-')
+                    customer = DatabaseHelper.get_customer_by_id(customer_id)
+                    if customer:
+                        customer_name = customer.get('nama', '-')
                 
                 ws_trans.cell(row=row_idx, column=1, value=t.get('no_invoice', '-'))
                 ws_trans.cell(row=row_idx, column=2, value=t.get('tanggal_transaksi', '-')[:19])
@@ -799,7 +1118,7 @@ class ReportPage(QWidget):
             for col in range(1, 8):
                 ws_trans.column_dimensions[get_column_letter(col)].width = 15
             
-            # ==================== SHEET 3: PENJUALAN PER BRAND (DETAIL) ====================
+            # ==================== SHEET 3: PENJUALAN PER BRAND ====================
             ws_brand = wb.create_sheet("Penjualan per Brand")
             
             # Header
@@ -816,7 +1135,6 @@ class ReportPage(QWidget):
             for t in self.filtered_transactions:
                 items = t.get('items', [])
                 if not items:
-                    # Jika tidak ada items, coba ambil dari details
                     items = t.get('details', [])
                 
                 for item in items:
@@ -828,12 +1146,9 @@ class ReportPage(QWidget):
                     customer_name = "-"
                     customer_id = t.get('id_pelanggan')
                     if customer_id:
-                        if 'pelanggan' in t and t['pelanggan']:
-                            customer_name = t['pelanggan'].get('nama', '-')
-                        else:
-                            customer = DatabaseHelper.get_customer_by_id(customer_id)
-                            if customer:
-                                customer_name = customer.get('nama', '-')
+                        customer = DatabaseHelper.get_customer_by_id(customer_id)
+                        if customer:
+                            customer_name = customer.get('nama', '-')
                     
                     ws_brand.cell(row=row_idx, column=1, value=brand)
                     ws_brand.cell(row=row_idx, column=2, value=t.get('no_invoice', '-'))
@@ -848,12 +1163,11 @@ class ReportPage(QWidget):
             for col in range(1, 8):
                 ws_brand.column_dimensions[get_column_letter(col)].width = 18
             
-            # ==================== SHEET 4: LOG STOK (DETAIL) ====================
+            # ==================== SHEET 4: LOG STOK ====================
             ws_log = wb.create_sheet("Log Stok")
             
-            # Header
-            headers = ["Tanggal", "Jenis", "Kode Barang", "Brand", "Jumlah (Kg)", "Stok Sebelum (Karung)", 
-                    "Jumlah (Karung)", "Stok Sesudah (Karung)", "Keterangan", "User"]
+            headers = ["Tanggal", "Jenis", "Kode Barang", "Brand", "Jumlah (Karung)", "Jumlah (KG)", 
+                    "Stok Sebelum (Karung)", "Stok Sesudah (Karung)", "Keterangan", "User"]
             for col, header in enumerate(headers, 1):
                 cell = ws_log.cell(row=1, column=col, value=header)
                 cell.font = header_font
@@ -884,15 +1198,14 @@ class ReportPage(QWidget):
             else:
                 logs = DatabaseHelper.get_stock_logs()
             
-            # Data
             for row_idx, log in enumerate(logs, 2):
                 ws_log.cell(row=row_idx, column=1, value=log.get('created_at', '-')[:19])
                 ws_log.cell(row=row_idx, column=2, value=log.get('jenis_transaksi', '-'))
                 ws_log.cell(row=row_idx, column=3, value=log.get('kode_barang', '-'))
                 ws_log.cell(row=row_idx, column=4, value=log.get('brand', '-'))
-                ws_log.cell(row=row_idx, column=7, value=float(log.get('jumlah_karung', 0)))
-                ws_log.cell(row=row_idx, column=5, value=float(log.get('jumlah_kg', 0)))
-                ws_log.cell(row=row_idx, column=6, value=float(log.get('stok_sebelum_karung', 0)))
+                ws_log.cell(row=row_idx, column=5, value=float(log.get('jumlah_karung', 0)))
+                ws_log.cell(row=row_idx, column=6, value=float(log.get('jumlah_kg', 0)))
+                ws_log.cell(row=row_idx, column=7, value=float(log.get('stok_sebelum_karung', 0)))
                 ws_log.cell(row=row_idx, column=8, value=float(log.get('stok_sesudah_karung', 0)))
                 ws_log.cell(row=row_idx, column=9, value=log.get('keterangan', '-'))
                 ws_log.cell(row=row_idx, column=10, value=log.get('user', '-'))
@@ -906,14 +1219,12 @@ class ReportPage(QWidget):
                     for col in range(1, 11):
                         ws_log.cell(row=row_idx, column=col).fill = PatternFill(start_color="FFEBEE", end_color="FFEBEE", fill_type="solid")
             
-            # Auto fit columns
             for col in range(1, 11):
                 ws_log.column_dimensions[get_column_letter(col)].width = 18
             
-            # ==================== SHEET 5: REKAP BRAND (RINGKASAN) ====================
+            # ==================== SHEET 5: REKAP BRAND ====================
             ws_brand_summary = wb.create_sheet("Rekap Brand")
             
-            # Header
             headers = ["Brand", "Jumlah Transaksi", "Total Karung", "Total KG", "Total Penjualan"]
             for col, header in enumerate(headers, 1):
                 cell = ws_brand_summary.cell(row=1, column=col, value=header)
@@ -922,7 +1233,6 @@ class ReportPage(QWidget):
                 cell.alignment = Alignment(horizontal='center', vertical='center')
                 cell.border = border
             
-            # Aggregate data
             brand_summary = {}
             for t in self.filtered_transactions:
                 items = t.get('items', [])
@@ -941,7 +1251,6 @@ class ReportPage(QWidget):
                     brand_summary[brand]['subtotal'] += subtotal
                     brand_summary[brand]['transactions'].add(t.get('no_invoice'))
             
-            # Sort by total sales
             sorted_brands = sorted(brand_summary.items(), key=lambda x: x[1]['subtotal'], reverse=True)
             
             for row_idx, (brand, data) in enumerate(sorted_brands, 2):
@@ -951,16 +1260,106 @@ class ReportPage(QWidget):
                 ws_brand_summary.cell(row=row_idx, column=4, value=float(data['qty'] * 50))
                 ws_brand_summary.cell(row=row_idx, column=5, value=float(data['subtotal']))
             
-            # Auto fit columns
             for col in range(1, 6):
                 ws_brand_summary.column_dimensions[get_column_letter(col)].width = 18
             
+            # ==================== SHEET 6: LAPORAN PELANGGAN (DETAIL) ====================
+            ws_customer = wb.create_sheet("Laporan Pelanggan")
+            
+            # Header
+            headers = ["Kode Pelanggan", "Nama", "No Telepon", "Email", "Total Belanja", "Total Transaksi", "Poin"]
+            for col, header in enumerate(headers, 1):
+                cell = ws_customer.cell(row=1, column=col, value=header)
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+                cell.border = border
+            
+            # Data pelanggan
+            customers = DatabaseHelper.get_customers()
+            customer_data = []
+            for c in customers:
+                customer_id = c.get('id_pelanggan')
+                # Hitung total transaksi dari database
+                trans_count = 0
+                for t in self.filtered_transactions:
+                    if t.get('id_pelanggan') == customer_id:
+                        trans_count += 1
+                
+                customer_data.append({
+                    'kode': c.get('kode_pelanggan', '-'),
+                    'nama': c.get('nama', '-'),
+                    'telp': c.get('no_telp', '-'),
+                    'email': c.get('email', '-'),
+                    'total_belanja': safe_float(c.get('total_belanja', 0)),
+                    'transaksi': trans_count,
+                    'poin': safe_float(c.get('poin', 0))
+                })
+            
+            # Sort by total belanja
+            customer_data.sort(key=lambda x: x['total_belanja'], reverse=True)
+            
+            for row_idx, c in enumerate(customer_data, 2):
+                ws_customer.cell(row=row_idx, column=1, value=c['kode'])
+                ws_customer.cell(row=row_idx, column=2, value=c['nama'])
+                ws_customer.cell(row=row_idx, column=3, value=c['telp'])
+                ws_customer.cell(row=row_idx, column=4, value=c['email'])
+                ws_customer.cell(row=row_idx, column=5, value=float(c['total_belanja']))
+                ws_customer.cell(row=row_idx, column=6, value=c['transaksi'])
+                ws_customer.cell(row=row_idx, column=7, value=float(c['poin']))
+            
+            for col in range(1, 8):
+                ws_customer.column_dimensions[get_column_letter(col)].width = 18
+            
+            # ==================== SHEET 7: HISTORY PELANGGAN ====================
+            ws_customer_history = wb.create_sheet("History Pelanggan")
+            
+            # Header
+            headers = ["Pelanggan", "No Invoice", "Tanggal", "Brand", "Jumlah (Karung)", "KG", "Subtotal"]
+            for col, header in enumerate(headers, 1):
+                cell = ws_customer_history.cell(row=1, column=col, value=header)
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+                cell.border = border
+            
+            # Data history per pelanggan
+            row_idx = 2
+            for c in customers:
+                customer_id = c.get('id_pelanggan')
+                customer_name = c.get('nama', '-')
+                
+                for t in self.filtered_transactions:
+                    if t.get('id_pelanggan') == customer_id:
+                        items = t.get('items', [])
+                        if not items:
+                            items = t.get('details', [])
+                        
+                        for item in items:
+                            brand = item.get('brand', 'Unknown')
+                            qty = safe_float(item.get('jumlah_karung', 0))
+                            subtotal = safe_float(item.get('subtotal', 0))
+                            
+                            ws_customer_history.cell(row=row_idx, column=1, value=customer_name)
+                            ws_customer_history.cell(row=row_idx, column=2, value=t.get('no_invoice', '-'))
+                            ws_customer_history.cell(row=row_idx, column=3, value=t.get('tanggal_transaksi', '-')[:19])
+                            ws_customer_history.cell(row=row_idx, column=4, value=brand)
+                            ws_customer_history.cell(row=row_idx, column=5, value=float(qty))
+                            ws_customer_history.cell(row=row_idx, column=6, value=float(qty * 50))
+                            ws_customer_history.cell(row=row_idx, column=7, value=float(subtotal))
+                            row_idx += 1
+            
+            for col in range(1, 8):
+                ws_customer_history.column_dimensions[get_column_letter(col)].width = 18
+            
             # Simpan file
             wb.save(filename)
-
+            
             msg_box = QMessageBox()
             msg_box.setWindowTitle("Sukses!")
-            msg_box.setText(f"✅ Laporan berhasil diexport ke:\n{filename}\n\nFile berisi 5 sheet:\n1. Ringkasan\n2. Detail Transaksi\n3. Penjualan per Brand (Detail)\n4. Log Stok\n5. Rekap Brand")
+            msg_box.setText(f"✅ Laporan berhasil diexport ke:\n{filename}\n\nFile berisi 7 sheet:\n"
+                        "1. Ringkasan\n2. Detail Transaksi\n3. Penjualan per Brand\n4. Log Stok\n"
+                        "5. Rekap Brand\n6. Laporan Pelanggan\n7. History Pelanggan")
             msg_box.setStandardButtons(QMessageBox.StandardButton.Ok)
             msg_box.setDefaultButton(QMessageBox.StandardButton.Ok)
             msg_box.setIcon(QMessageBox.Icon.Information)
@@ -970,6 +1369,7 @@ class ReportPage(QWidget):
             QMessageBox.warning(self, "Error", "❌ Modul openpyxl tidak terinstall!\n\nJalankan: pip install openpyxl")
         except Exception as e:
             QMessageBox.warning(self, "Error", f"❌ Gagal export: {e}")
+            import traceback
             traceback.print_exc()
 
     def get_period_text(self):
